@@ -10,22 +10,24 @@ import numpy as np
 from tqdm import tqdm
 import argparse
 
-# -------------------- 模型定义 --------------------
+# -------------------- Model Definition --------------------
 
 
 class Semantic_IRT(nn.Module):
     """
-    使用题目 embedding 的 PSN-IRT变体，学生侧用 one-hot 编码，题目侧仅用 embedding。
+    A variant of PSN-IRT that utilizes item embeddings; 
+    the student side employs one-hot encoding, 
+    while the item side relies exclusively on embeddings.
     """
 
     def __init__(self, num_students, item_embed_dim=768, hidden_dim=64, model_type='4pl'):
         super().__init__()
         self.model_type = model_type.lower()
         assert self.model_type in ['1pl', '2pl',
-                                   '3pl', '4pl'], "模型类型必须是 1pl/2pl/3pl/4pl"
+                                   '3pl', '4pl'], "The model type must be 1pl/2pl/3pl/4pl"
 
         # --------------------------
-        # 学生能力网络（仅 ID）
+        # Student Ability Network (ID only)
         # --------------------------
         self.student_net = nn.Sequential(
             nn.Linear(num_students, hidden_dim),
@@ -35,7 +37,7 @@ class Semantic_IRT(nn.Module):
         )
 
         # --------------------------
-        # 题目参数网络（仅 Embedding）
+        # Parameter Network (Embeddings only)
         # --------------------------
         self.item_embed_proj = nn.Sequential(
             nn.Linear(item_embed_dim, hidden_dim),
@@ -44,7 +46,7 @@ class Semantic_IRT(nn.Module):
             nn.Linear(hidden_dim, hidden_dim)
         )
 
-        # 动态参数头
+        # Dynamic Parameter Head
         param_dims = {'1pl': 1, '2pl': 2, '3pl': 3, '4pl': 4}
         self.item_param_head = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
@@ -68,7 +70,7 @@ class Semantic_IRT(nn.Module):
         prob = c + (d - c) * torch.sigmoid(a * (theta - beta))
         return prob.clamp(1e-6, 1-1e-6)
 
-# -------------------- 数据集类 --------------------
+# -------------------- Dataset Class --------------------
 
 
 class ItemOnlyDataset(Dataset):
@@ -95,7 +97,7 @@ class ItemOnlyDataset(Dataset):
             "label": torch.tensor(label, dtype=torch.float32)
         }
 
-# -------------------- 训练工具 --------------------
+# -------------------- Training Tools --------------------
 
 
 def evaluate(model, dataloader, device):
@@ -163,7 +165,7 @@ def save_params(model, train_df, item_embeddings, model_type):
     df[param_cols].to_csv(
         f"results/item_parameters_semantic_{model_type}_part2.csv", index=False)
 
-# -------------------- 主程序 --------------------
+# -------------------- Main Program --------------------
 
 
 def main():
@@ -177,7 +179,7 @@ def main():
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"使用设备: {device} | 模型类型: {args.model_type.upper()}")
+    print(f"Device: {device} | Model type: {args.model_type.upper()}")
 
     try:
         train_df = pd.read_csv(args.train_csv, header=None)
@@ -185,9 +187,9 @@ def main():
         item_emb = torch.load(args.item_emb, weights_only=False)
         if isinstance(item_emb, list):
             item_emb = torch.tensor(item_emb, dtype=torch.float32)
-        print(f"数据加载成功 | 学生数: {len(train_df)} | 题目数: {len(train_df.columns)}")
+        print(f"Data loaded successfully | Number of students: {len(train_df)} | Number of questions: {len(train_df.columns)}")
     except Exception as e:
-        print(f"数据加载失败: {e}")
+        print(f"Failed to load data: {e}")
         return
 
     train_dataset = ItemOnlyDataset(train_df, item_emb)
@@ -243,17 +245,17 @@ def main():
         else:
             early_stop += 1
             if early_stop >= 5:
-                print(f"早停触发于第 {epoch+1} 轮")
+                print(f"Early stopping triggered at {epoch+1} 轮")
                 break
 
     model.load_state_dict(torch.load("best_model.pt", weights_only=False))
     test_metrics = evaluate(model, test_loader, device)
-    print(f"\n测试集结果:")
+    print(f"\nTest set results:")
     print(
         f"ACC: {test_metrics['acc']:.4f} | F1: {test_metrics['f1']:.4f} | AUC: {test_metrics['auc']:.4f}")
 
     save_params(model, train_df, item_emb, args.model_type)
-    print("参数已保存至 student_abilities.csv 和 item_parameters.csv")
+    print("Parameters have been saved to student_abilities.csv and item_parameters.csv")
 
 
 if __name__ == "__main__":
