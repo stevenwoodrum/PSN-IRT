@@ -9,6 +9,11 @@ from sklearn.metrics import accuracy_score, roc_auc_score, f1_score
 import numpy as np
 from tqdm import tqdm
 import argparse
+import json
+import matplotlib.pyplot as plt
+from pathlib import Path
+
+RANDOM_SEED = 5814
 
 # -------------------- Model Definition --------------------
 
@@ -73,18 +78,18 @@ class Semantic_IRT(nn.Module):
 # -------------------- Dataset Class --------------------
 
 
-class ItemOnlyDataset(Dataset):
-    def __init__(self, df, item_embeddings):
-        self.num_students = len(df)
-        self.num_items = len(df.columns)
-        self.item_embeddings = torch.tensor(
-            item_embeddings, dtype=torch.float32)
-
-        self.data = []
-        for sid in range(self.num_students):
-            for qid in range(self.num_items):
-                if pd.notnull(df.iloc[sid, qid]):
-                    self.data.append((sid, qid, int(df.iloc[sid, qid])))
+class ResponseSamplesDataset(Dataset):
+    def __init__(self, samples, student_indices, item_indices, item_embeddings):
+        self.num_students = len(student_indices)
+        self.item_embeddings = torch.tensor(item_embeddings, dtype=torch.float32)
+        self.data = [
+            (
+                student_indices[sample["normalized_name"]],
+                item_indices[sample["item_id"]],
+                int(sample["response"]),
+            )
+            for sample in samples
+        ]
 
     def __len__(self):
         return len(self.data)
@@ -100,38 +105,95 @@ class ItemOnlyDataset(Dataset):
 # -------------------- Training Tools --------------------
 
 
-def evaluate(model, dataloader, device):
+def evaluate(model, dataloader, device, criterion=None):
     model.eval()
     probs, labels = [], []
+    total_loss = 0.0
+    num_examples = 0
+    if criterion is None:
+        criterion = nn.BCELoss()
+
     with torch.no_grad():
         for batch in dataloader:
+            student_ids = batch["student_id"].to(device)
+            item_embeddings = batch["item_embed"].to(device)
+            batch_labels = batch["label"].to(device)
             outputs = model(
-                batch["student_id"].to(device),
-                batch["item_embed"].to(device)
+                student_ids,
+                item_embeddings,
             )
-            probs.extend(outputs.cpu().numpy())
-            labels.extend(batch["label"].cpu().numpy())
+            total_loss += criterion(
+                outputs.squeeze(-1), batch_labels
+            ).item() * batch_labels.numel()
+            num_examples += batch_labels.numel()
+            probs.extend(outputs.squeeze(-1).cpu().tolist())
+            labels.extend(batch["label"].cpu().tolist())
 
     preds = [1 if p > 0.5 else 0 for p in probs]
     return {
+        'loss': total_loss / num_examples,
         'acc': accuracy_score(labels, preds),
         'f1': f1_score(labels, preds),
         'auc': roc_auc_score(labels, probs)
     }
 
 
-def save_params(model, train_df, item_embeddings, model_type):
+def plot_training_history(history, output_dir):
+    history_df = pd.DataFrame(history)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    history_path = output_dir / "semantic_irt_training_history.csv"
+    plot_path = output_dir / "semantic_irt_training_history.png"
+    history_df.to_csv(history_path, index=False)
+
+    fig, loss_axis = plt.subplots(figsize=(10, 6))
+    auc_axis = loss_axis.twinx()
+
+    train_line, = loss_axis.plot(
+        history_df["epoch"], history_df["training_loss"],
+        label="Training loss", color="tab:blue",
+    )
+    val_loss_line, = loss_axis.plot(
+        history_df["epoch"], history_df["validation_loss"],
+        label="Validation loss", color="tab:orange",
+    )
+    auc_line, = auc_axis.plot(
+        history_df["epoch"], history_df["validation_auc"],
+        label="Validation AUC", color="tab:green",
+    )
+
+    loss_axis.set_xlabel("Epoch")
+    loss_axis.set_ylabel("Loss")
+    auc_axis.set_ylabel("Validation AUC")
+    loss_axis.set_title("Semantic IRT Training History")
+    loss_axis.legend(
+        [train_line, val_loss_line, auc_line],
+        [line.get_label() for line in (train_line, val_loss_line, auc_line)],
+        loc="best",
+    )
+    fig.tight_layout()
+    fig.savefig(plot_path, dpi=150)
+    plt.close(fig)
+    print(f"Training history saved to {history_path} and {plot_path}")
+
+
+def save_params(model, student_names, item_ids, item_embeddings, model_type):
     model.eval()
     device = next(model.parameters()).device
 
     abilities = []
     with torch.no_grad():
-        for sid in range(len(train_df)):
+        for sid in range(len(student_names)):
             student_id = F.one_hot(torch.tensor(
-                sid), len(train_df)).float().to(device)
+                sid), len(student_names)).float().to(device)
             abilities.append(model.student_net(student_id).item())
 
-    pd.DataFrame({"student_id": range(len(train_df)), "ability": abilities}).to_csv(
+    pd.DataFrame({
+        "student_id": range(len(student_names)),
+        "normalized_name": student_names,
+        "ability": abilities,
+    }).to_csv(
         f"results/student_abilities_semantic_{model_type}_part2.csv", index=False)
 
     param_cols = ['item_id', 'difficulty',
@@ -139,12 +201,12 @@ def save_params(model, train_df, item_embeddings, model_type):
     item_params = []
 
     with torch.no_grad():
-        for qid in range(len(train_df.columns)):
+        for qid, item_id in enumerate(item_ids):
             item_embed = torch.tensor(
                 item_embeddings[qid], dtype=torch.float32).unsqueeze(0).to(device)
             params = model.item_param_head(model.item_embed_proj(item_embed))
 
-            record = {'item_id': qid}
+            record = {'item_id': item_id}
             if model_type in ['1pl', '2pl', '3pl', '4pl']:
                 record['difficulty'] = params[0, 0].item()
             if model_type in ['2pl', '3pl', '4pl']:
@@ -172,40 +234,86 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_type", type=str, default='4pl',
                         choices=['1pl', '2pl', '3pl', '4pl'])
-    parser.add_argument("--item_emb", type=str,
-                        default='models/embeddings.csv')
-    parser.add_argument("--train_csv", type=str, default="./data/part2.csv")
-    parser.add_argument("--test_csv", type=str, default="./data/test.csv")
+    parser.add_argument("--samples_json", type=str, default="samples.json")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device} | Model type: {args.model_type.upper()}")
 
     try:
-        train_df = pd.read_csv(args.train_csv, header=None)
-        test_df = pd.read_csv(args.test_csv, header=None)
-        item_emb = torch.load(args.item_emb, weights_only=False)
-        if isinstance(item_emb, list):
-            item_emb = torch.tensor(item_emb, dtype=torch.float32)
-        print(f"Data loaded successfully | Number of students: {len(train_df)} | Number of questions: {len(train_df.columns)}")
+        with open(args.samples_json, encoding="utf-8") as file:
+            samples = json.load(file)
+        if not samples:
+            raise ValueError(f"No response samples found in {args.samples_json}")
+
+        student_names = list(dict.fromkeys(
+            sample["normalized_name"] for sample in samples
+        ))
+        item_ids = list(dict.fromkeys(sample["item_id"] for sample in samples))
+        student_indices = {
+            name: index for index, name in enumerate(student_names)
+        }
+        item_indices = {item_id: index for index, item_id in enumerate(item_ids)}
+
+        item_embeddings_by_id = {}
+        for sample in samples:
+            embedding = np.asarray(sample["content_embedding"], dtype=np.float32)
+            if embedding.ndim != 1 or embedding.size == 0:
+                raise ValueError(
+                    f"Item {sample['item_id']!r} has an invalid content_embedding"
+                )
+            if not np.isfinite(embedding).all():
+                raise ValueError(
+                    f"Item {sample['item_id']!r} has non-finite embedding values"
+                )
+            item_id = sample["item_id"]
+            if item_id in item_embeddings_by_id:
+                if not np.array_equal(item_embeddings_by_id[item_id], embedding):
+                    raise ValueError(
+                        f"Item {item_id!r} has inconsistent content_embedding vectors"
+                    )
+            else:
+                item_embeddings_by_id[item_id] = embedding
+
+            if sample["response"] not in (0, 1, 0.0, 1.0):
+                raise ValueError(
+                    f"Sample has non-binary response {sample['response']!r}"
+                )
+
+        item_embeddings = np.stack(
+            [item_embeddings_by_id[item_id] for item_id in item_ids]
+        )
+        dataset = ResponseSamplesDataset(
+            samples, student_indices, item_indices, item_embeddings
+        )
+        train_test_size = int(0.8 * len(dataset))
+        train_data, test_set = random_split(
+            dataset,
+            [train_test_size, len(dataset) - train_test_size],
+            generator=torch.Generator().manual_seed(RANDOM_SEED),
+        )
+        train_size = int(0.8 * len(train_data))
+        train_set, val_set = random_split(
+            train_data,
+            [train_size, len(train_data) - train_size],
+            generator=torch.Generator().manual_seed(RANDOM_SEED),
+        )
+        print(
+            f"Loaded {len(samples)} responses | {len(student_names)} subjects | "
+            f"{len(item_ids)} items | embedding dimension {item_embeddings.shape[1]}"
+        )
     except Exception as e:
         print(f"Failed to load data: {e}")
         return
 
-    train_dataset = ItemOnlyDataset(train_df, item_emb)
-    train_size = int(0.8 * len(train_dataset))
-    train_set, val_set = random_split(
-        train_dataset, [train_size, len(train_dataset)-train_size])
-    test_dataset = ItemOnlyDataset(test_df, item_emb)
-
     train_loader = DataLoader(
         train_set, batch_size=512, shuffle=True, pin_memory=True)
     val_loader = DataLoader(val_set, batch_size=512, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=512, pin_memory=True)
+    test_loader = DataLoader(test_set, batch_size=512, pin_memory=True)
 
     model = Semantic_IRT(
-        num_students=len(train_df),
-        item_embed_dim=item_emb.shape[1],
+        num_students=len(student_names),
+        item_embed_dim=item_embeddings.shape[1],
         hidden_dim=64,
         model_type=args.model_type
     ).to(device)
@@ -214,12 +322,14 @@ def main():
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 'max', patience=3, factor=0.5)
     criterion = nn.BCELoss()
-    best_f1 = 0
+    best_f1 = -1
     early_stop = 0
+    history = []
 
     for epoch in range(100):
         model.train()
-        train_loss = 0
+        train_loss_total = 0.0
+        train_examples = 0
 
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
             optimizer.zero_grad()
@@ -227,16 +337,29 @@ def main():
                 batch["student_id"].to(device),
                 batch["item_embed"].to(device)
             )
-            loss = criterion(outputs.squeeze(), batch["label"].to(device))
+            loss = criterion(outputs.squeeze(-1), batch["label"].to(device))
 
             loss.backward()
             optimizer.step()
-            train_loss += loss.item()
+            batch_size = batch["label"].numel()
+            train_loss_total += loss.item() * batch_size
+            train_examples += batch_size
 
-        val_metrics = evaluate(model, val_loader, device)
+        training_loss = train_loss_total / train_examples
+        val_metrics = evaluate(model, val_loader, device, criterion)
+        history.append({
+            "epoch": epoch + 1,
+            "training_loss": training_loss,
+            "validation_loss": val_metrics["loss"],
+            "validation_auc": val_metrics["auc"],
+        })
         scheduler.step(val_metrics['f1'])
         print(
-            f"Train Loss: {train_loss/len(train_loader):.4f} | Val F1: {val_metrics['f1']:.4f} | Val AUC: {val_metrics['auc']:.4f}")
+            f"Train Loss: {training_loss:.4f} | "
+            f"Val Loss: {val_metrics['loss']:.4f} | "
+            f"Val F1: {val_metrics['f1']:.4f} | "
+            f"Val AUC: {val_metrics['auc']:.4f}"
+        )
 
         if val_metrics['f1'] > best_f1 + 1e-4:
             best_f1 = val_metrics['f1']
@@ -244,17 +367,20 @@ def main():
             torch.save(model.state_dict(), "best_model.pt")
         else:
             early_stop += 1
-            if early_stop >= 5:
-                print(f"Early stopping triggered at {epoch+1} 轮")
-                break
+            #if early_stop >= 5:
+            #    print(f"Early stopping triggered at {epoch+1} 轮")
+            #    break
 
+    plot_training_history(history, "results")
     model.load_state_dict(torch.load("best_model.pt", weights_only=False))
     test_metrics = evaluate(model, test_loader, device)
     print(f"\nTest set results:")
     print(
         f"ACC: {test_metrics['acc']:.4f} | F1: {test_metrics['f1']:.4f} | AUC: {test_metrics['auc']:.4f}")
 
-    save_params(model, train_df, item_emb, args.model_type)
+    save_params(
+        model, student_names, item_ids, item_embeddings, args.model_type
+    )
     print("Parameters have been saved to student_abilities.csv and item_parameters.csv")
 
 
