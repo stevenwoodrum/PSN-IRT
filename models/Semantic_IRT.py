@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
-from sklearn.metrics import accuracy_score, roc_auc_score, f1_score
+from sklearn.metrics import brier_score_loss
 import numpy as np
 from tqdm import tqdm
 import argparse
@@ -111,7 +111,7 @@ def evaluate(model, dataloader, device, criterion=None):
     total_loss = 0.0
     num_examples = 0
     if criterion is None:
-        criterion = nn.BCELoss()
+        criterion = nn.MSELoss()
 
     with torch.no_grad():
         for batch in dataloader:
@@ -129,16 +129,13 @@ def evaluate(model, dataloader, device, criterion=None):
             probs.extend(outputs.squeeze(-1).cpu().tolist())
             labels.extend(batch["label"].cpu().tolist())
 
-    preds = [1 if p > 0.5 else 0 for p in probs]
     return {
         'loss': total_loss / num_examples,
-        'acc': accuracy_score(labels, preds),
-        'f1': f1_score(labels, preds),
-        'auc': roc_auc_score(labels, probs)
+        'brier': brier_score_loss(labels, probs),
     }
 
 
-def plot_training_history(history, output_dir):
+def plot_training_history(history, output_dir, test_brier=None):
     history_df = pd.DataFrame(history)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -148,39 +145,44 @@ def plot_training_history(history, output_dir):
     history_df.to_csv(history_path, index=False)
 
     fig, loss_axis = plt.subplots(figsize=(10, 6))
-    auc_axis = loss_axis.twinx()
 
     train_line, = loss_axis.plot(
         history_df["epoch"], history_df["training_loss"],
-        label="Training loss", color="tab:blue",
+        label="Training Brier loss", color="tab:blue",
     )
-    val_loss_line, = loss_axis.plot(
-        history_df["epoch"], history_df["validation_loss"],
-        label="Validation loss", color="tab:orange",
-    )
-    auc_line, = auc_axis.plot(
-        history_df["epoch"], history_df["validation_auc"],
-        label="Validation AUC", color="tab:green",
-    )
+    lines = [train_line]
+    if "validation_loss" in history_df:
+        val_loss_line, = loss_axis.plot(
+            history_df["epoch"], history_df["validation_loss"],
+            label="Validation Brier loss", color="tab:orange",
+        )
+        lines.append(val_loss_line)
+    if test_brier is not None:
+        test_brier_line = loss_axis.axhline(
+            test_brier,
+            label=f"Test Brier ({test_brier:.4f})",
+            color="tab:green",
+            linestyle="--",
+        )
+        lines.append(test_brier_line)
 
     loss_axis.set_xlabel("Epoch")
-    loss_axis.set_ylabel("Loss")
-    auc_axis.set_ylabel("Validation AUC")
-    loss_axis.set_title("Semantic IRT Training History")
-    loss_axis.legend(
-        [train_line, val_loss_line, auc_line],
-        [line.get_label() for line in (train_line, val_loss_line, auc_line)],
-        loc="best",
-    )
+    loss_axis.set_ylabel("Brier loss")
+    loss_axis.set_title("Semantic IRT Brier Training History")
+    loss_axis.legend(lines, [line.get_label() for line in lines], loc="best")
     fig.tight_layout()
     fig.savefig(plot_path, dpi=150)
     plt.close(fig)
     print(f"Training history saved to {history_path} and {plot_path}")
 
 
-def save_params(model, student_names, item_ids, item_embeddings, model_type):
+def save_params(
+    model, student_names, item_ids, item_embeddings, model_type, output_dir
+):
     model.eval()
     device = next(model.parameters()).device
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     abilities = []
     with torch.no_grad():
@@ -194,7 +196,7 @@ def save_params(model, student_names, item_ids, item_embeddings, model_type):
         "normalized_name": student_names,
         "ability": abilities,
     }).to_csv(
-        f"results/student_abilities_semantic_{model_type}_part2.csv", index=False)
+        output_dir / f"student_abilities_semantic_{model_type}.csv", index=False)
 
     param_cols = ['item_id', 'difficulty',
                   'discriminability', 'guessing', 'feasibility']
@@ -224,8 +226,8 @@ def save_params(model, student_names, item_ids, item_embeddings, model_type):
     for col in param_cols:
         if col not in df.columns:
             df[col] = np.nan
-    df[param_cols].to_csv(
-        f"results/item_parameters_semantic_{model_type}_part2.csv", index=False)
+    df[['item_id'] + param_cols[1:]].to_csv(
+        output_dir / f"item_parameters_semantic_{model_type}.csv", index=False)
 
 # -------------------- Main Program --------------------
 
@@ -235,6 +237,8 @@ def main():
     parser.add_argument("--model_type", type=str, default='4pl',
                         choices=['1pl', '2pl', '3pl', '4pl'])
     parser.add_argument("--samples_json", type=str, default="samples.json")
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--batch_size", type=int, default=512)
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -245,18 +249,22 @@ def main():
             samples = json.load(file)
         if not samples:
             raise ValueError(f"No response samples found in {args.samples_json}")
-
-        student_names = list(dict.fromkeys(
-            sample["normalized_name"] for sample in samples
-        ))
-        item_ids = list(dict.fromkeys(sample["item_id"] for sample in samples))
-        student_indices = {
-            name: index for index, name in enumerate(student_names)
-        }
-        item_indices = {item_id: index for index, item_id in enumerate(item_ids)}
-
         item_embeddings_by_id = {}
         for sample in samples:
+            required_fields = (
+                "benchmark_id", "normalized_name", "item_id",
+                "content_embedding", "response",
+            )
+            missing_fields = [
+                field for field in required_fields if field not in sample
+            ]
+            if missing_fields:
+                raise ValueError(
+                    f"Sample is missing required fields: {missing_fields}"
+                )
+            if not isinstance(sample["normalized_name"], str):
+                raise ValueError("Every sample must have a string normalized_name")
+
             embedding = np.asarray(sample["content_embedding"], dtype=np.float32)
             if embedding.ndim != 1 or embedding.size == 0:
                 raise ValueError(
@@ -279,109 +287,315 @@ def main():
                 raise ValueError(
                     f"Sample has non-binary response {sample['response']!r}"
                 )
-
-        item_embeddings = np.stack(
-            [item_embeddings_by_id[item_id] for item_id in item_ids]
-        )
-        dataset = ResponseSamplesDataset(
-            samples, student_indices, item_indices, item_embeddings
-        )
-        train_test_size = int(0.8 * len(dataset))
-        train_data, test_set = random_split(
-            dataset,
-            [train_test_size, len(dataset) - train_test_size],
-            generator=torch.Generator().manual_seed(RANDOM_SEED),
-        )
-        train_size = int(0.8 * len(train_data))
-        train_set, val_set = random_split(
-            train_data,
-            [train_size, len(train_data) - train_size],
-            generator=torch.Generator().manual_seed(RANDOM_SEED),
-        )
-        print(
-            f"Loaded {len(samples)} responses | {len(student_names)} subjects | "
-            f"{len(item_ids)} items | embedding dimension {item_embeddings.shape[1]}"
-        )
     except Exception as e:
         print(f"Failed to load data: {e}")
         return
 
-    train_loader = DataLoader(
-        train_set, batch_size=512, shuffle=True, pin_memory=True)
-    val_loader = DataLoader(val_set, batch_size=512, pin_memory=True)
-    test_loader = DataLoader(test_set, batch_size=512, pin_memory=True)
+    embedding_dimensions = {
+        len(sample["content_embedding"]) for sample in samples
+    }
+    if len(embedding_dimensions) != 1:
+        raise ValueError("All content_embedding vectors must have equal length")
 
-    model = Semantic_IRT(
-        num_students=len(student_names),
-        item_embed_dim=item_embeddings.shape[1],
+    benchmark_ids = sorted({sample["benchmark_id"] for sample in samples})
+    results_dir = Path("results") / "leave_one_benchmark_out"
+    fold_results = []
+
+    for fold_number, heldout_benchmark in enumerate(benchmark_ids):
+        trainval_samples = [
+            sample for sample in samples
+            if sample["benchmark_id"] != heldout_benchmark
+        ]
+        all_test_samples = [
+            sample for sample in samples
+            if sample["benchmark_id"] == heldout_benchmark
+        ]
+        student_names = list(dict.fromkeys(
+            sample["normalized_name"] for sample in trainval_samples
+        ))
+        known_students = set(student_names)
+        test_samples = [
+            sample for sample in all_test_samples
+            if sample["normalized_name"] in known_students
+        ]
+        excluded_test_count = len(all_test_samples) - len(test_samples)
+        if not trainval_samples:
+            raise ValueError(
+                f"No training responses available for {heldout_benchmark}"
+            )
+        if not test_samples:
+            print(
+                f"Skipping {heldout_benchmark}: no held-out responses have "
+                "subjects present in the training benchmarks."
+            )
+            fold_results.append({
+                "benchmark_id": heldout_benchmark,
+                "test_responses": 0,
+                "excluded_unseen_subject_responses": excluded_test_count,
+                "test_brier": np.nan,
+            })
+            continue
+
+        fold_samples = trainval_samples + test_samples
+        item_ids = list(dict.fromkeys(
+            sample["item_id"] for sample in fold_samples
+        ))
+        item_indices = {item_id: i for i, item_id in enumerate(item_ids)}
+        student_indices = {
+            name: i for i, name in enumerate(student_names)
+        }
+        item_embeddings = np.stack([
+            item_embeddings_by_id[item_id] for item_id in item_ids
+        ])
+
+        dataset = ResponseSamplesDataset(
+            fold_samples, student_indices, item_indices, item_embeddings
+        )
+        trainval_size = len(trainval_samples)
+        train_size = int(0.8 * trainval_size)
+        val_size = trainval_size - train_size
+        if train_size == 0 or val_size == 0:
+            raise ValueError(
+                f"Not enough training-benchmark responses to split train/val "
+                f"for {heldout_benchmark} ({trainval_size} responses)"
+            )
+
+        generator = torch.Generator().manual_seed(
+            RANDOM_SEED + fold_number
+        )
+        trainval_set, test_set = random_split(
+            dataset,
+            [trainval_size, len(test_samples)],
+            generator=generator,
+        )
+        train_set, val_set = random_split(
+            trainval_set,
+            [train_size, val_size],
+            generator=torch.Generator().manual_seed(
+                RANDOM_SEED + fold_number
+            ),
+        )
+        fold_dir = results_dir / heldout_benchmark
+        fold_dir.mkdir(parents=True, exist_ok=True)
+
+        train_loader = DataLoader(
+            train_set, batch_size=args.batch_size, shuffle=True,
+            pin_memory=device.type == "cuda",
+        )
+        val_loader = DataLoader(
+            val_set, batch_size=args.batch_size,
+            pin_memory=device.type == "cuda",
+        )
+        test_loader = DataLoader(
+            test_set, batch_size=args.batch_size,
+            pin_memory=device.type == "cuda",
+        )
+
+        model = Semantic_IRT(
+            num_students=len(student_names),
+            item_embed_dim=item_embeddings.shape[1],
+            hidden_dim=64,
+            model_type=args.model_type,
+        ).to(device)
+        optimizer = optim.AdamW(
+            model.parameters(), lr=3e-4, weight_decay=1e-5
+        )
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, "min", patience=3, factor=0.5
+        )
+        criterion = nn.MSELoss()
+        best_brier = float("inf")
+        history = []
+
+        print(
+            f"\nHoldout: {heldout_benchmark} | "
+            f"train/validation responses: {trainval_size} | "
+            f"test responses: {len(test_samples)} | "
+            f"excluded unseen-subject responses: {excluded_test_count}"
+        )
+        for epoch in range(args.epochs):
+            model.train()
+            train_loss_total = 0.0
+            train_examples = 0
+
+            for batch in tqdm(
+                train_loader,
+                desc=f"{heldout_benchmark} epoch {epoch + 1}",
+            ):
+                optimizer.zero_grad()
+                outputs = model(
+                    batch["student_id"].to(device),
+                    batch["item_embed"].to(device),
+                )
+                loss = criterion(
+                    outputs.squeeze(-1), batch["label"].to(device)
+                )
+                loss.backward()
+                optimizer.step()
+                batch_size = batch["label"].numel()
+                train_loss_total += loss.item() * batch_size
+                train_examples += batch_size
+
+            training_loss = train_loss_total / train_examples
+            val_metrics = evaluate(model, val_loader, device, criterion)
+            history.append({
+                "epoch": epoch + 1,
+                "training_loss": training_loss,
+                "validation_loss": val_metrics["loss"],
+                "validation_brier": val_metrics["brier"],
+            })
+            scheduler.step(val_metrics["brier"])
+            print(
+                f"Train Loss: {training_loss:.4f} | "
+                f"Val Loss: {val_metrics['loss']:.4f} | "
+                f"Val Brier: {val_metrics['brier']:.4f}"
+            )
+
+            if val_metrics["brier"] < best_brier:
+                best_brier = val_metrics["brier"]
+                torch.save(model.state_dict(), fold_dir / "best_model.pt")
+
+        model.load_state_dict(torch.load(
+            fold_dir / "best_model.pt",
+            map_location=device,
+            weights_only=True,
+        ))
+        test_metrics = evaluate(model, test_loader, device)
+        plot_training_history(
+            history, fold_dir, test_brier=test_metrics["brier"]
+        )
+        print(
+            f"{heldout_benchmark} test Brier: "
+            f"{test_metrics['brier']:.4f}"
+        )
+        save_params(
+            model, student_names, item_ids, item_embeddings,
+            args.model_type, fold_dir,
+        )
+        fold_results.append({
+            "benchmark_id": heldout_benchmark,
+            "test_responses": len(test_samples),
+            "excluded_unseen_subject_responses": excluded_test_count,
+            "test_brier": test_metrics["brier"],
+        })
+
+    results_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = results_dir / "summary.csv"
+    pd.DataFrame(fold_results).to_csv(summary_path, index=False)
+    print(f"\nLeave-one-benchmark-out results saved to {summary_path}")
+
+    all_data_dir = Path("results") / "all_data"
+    all_data_dir.mkdir(parents=True, exist_ok=True)
+    all_student_names = list(dict.fromkeys(
+        sample["normalized_name"] for sample in samples
+    ))
+    all_item_ids = list(dict.fromkeys(
+        sample["item_id"] for sample in samples
+    ))
+    all_student_indices = {
+        name: index for index, name in enumerate(all_student_names)
+    }
+    all_item_indices = {
+        item_id: index for index, item_id in enumerate(all_item_ids)
+    }
+    all_item_embeddings = np.stack([
+        item_embeddings_by_id[item_id] for item_id in all_item_ids
+    ])
+    all_data = ResponseSamplesDataset(
+        samples,
+        all_student_indices,
+        all_item_indices,
+        all_item_embeddings,
+    )
+    all_data_loader = DataLoader(
+        all_data,
+        batch_size=args.batch_size,
+        shuffle=True,
+        pin_memory=device.type == "cuda",
+    )
+    all_data_model = Semantic_IRT(
+        num_students=len(all_student_names),
+        item_embed_dim=all_item_embeddings.shape[1],
         hidden_dim=64,
-        model_type=args.model_type
+        model_type=args.model_type,
     ).to(device)
+    all_data_optimizer = optim.AdamW(
+        all_data_model.parameters(), lr=3e-4, weight_decay=1e-5
+    )
+    all_data_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        all_data_optimizer, "min", patience=3, factor=0.5
+    )
+    criterion = nn.MSELoss()
+    all_data_history = []
 
-    optimizer = optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-5)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 'max', patience=3, factor=0.5)
-    criterion = nn.BCELoss()
-    best_f1 = -1
-    early_stop = 0
-    history = []
-
-    for epoch in range(100):
-        model.train()
+    print(
+        f"\nTraining final model on all {len(samples)} responses "
+        f"({len(all_student_names)} subjects, {len(all_item_ids)} items)."
+    )
+    for epoch in range(args.epochs):
+        all_data_model.train()
         train_loss_total = 0.0
         train_examples = 0
 
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
-            optimizer.zero_grad()
-            outputs = model(
+        for batch in tqdm(
+            all_data_loader,
+            desc=f"All-data epoch {epoch + 1}",
+        ):
+            all_data_optimizer.zero_grad()
+            outputs = all_data_model(
                 batch["student_id"].to(device),
-                batch["item_embed"].to(device)
+                batch["item_embed"].to(device),
             )
-            loss = criterion(outputs.squeeze(-1), batch["label"].to(device))
-
+            loss = criterion(
+                outputs.squeeze(-1), batch["label"].to(device)
+            )
             loss.backward()
-            optimizer.step()
+            all_data_optimizer.step()
             batch_size = batch["label"].numel()
             train_loss_total += loss.item() * batch_size
             train_examples += batch_size
 
         training_loss = train_loss_total / train_examples
-        val_metrics = evaluate(model, val_loader, device, criterion)
-        history.append({
+        training_metrics = evaluate(
+            all_data_model, all_data_loader, device, criterion
+        )
+        all_data_history.append({
             "epoch": epoch + 1,
             "training_loss": training_loss,
-            "validation_loss": val_metrics["loss"],
-            "validation_auc": val_metrics["auc"],
+            "training_brier": training_metrics["brier"],
         })
-        scheduler.step(val_metrics['f1'])
+        all_data_scheduler.step(training_metrics["brier"])
         print(
-            f"Train Loss: {training_loss:.4f} | "
-            f"Val Loss: {val_metrics['loss']:.4f} | "
-            f"Val F1: {val_metrics['f1']:.4f} | "
-            f"Val AUC: {val_metrics['auc']:.4f}"
+            f"All-data train loss: {training_loss:.4f} | "
+            f"All-data Brier: {training_metrics['brier']:.4f}"
         )
 
-        if val_metrics['f1'] > best_f1 + 1e-4:
-            best_f1 = val_metrics['f1']
-            early_stop = 0
-            torch.save(model.state_dict(), "best_model.pt")
-        else:
-            early_stop += 1
-            #if early_stop >= 5:
-            #    print(f"Early stopping triggered at {epoch+1} 轮")
-            #    break
-
-    plot_training_history(history, "results")
-    model.load_state_dict(torch.load("best_model.pt", weights_only=False))
-    test_metrics = evaluate(model, test_loader, device)
-    print(f"\nTest set results:")
-    print(
-        f"ACC: {test_metrics['acc']:.4f} | F1: {test_metrics['f1']:.4f} | AUC: {test_metrics['auc']:.4f}")
-
+    all_data_model_path = all_data_dir / "semantic_irt_model.pt"
+    torch.save(all_data_model.state_dict(), all_data_model_path)
+    plot_training_history(all_data_history, all_data_dir)
     save_params(
-        model, student_names, item_ids, item_embeddings, args.model_type
+        all_data_model,
+        all_student_names,
+        all_item_ids,
+        all_item_embeddings,
+        args.model_type,
+        all_data_dir,
     )
-    print("Parameters have been saved to student_abilities.csv and item_parameters.csv")
+    all_data_summary = {
+        "model_type": args.model_type,
+        "epochs": args.epochs,
+        "responses": len(samples),
+        "subjects": len(all_student_names),
+        "items": len(all_item_ids),
+        "embedding_dimension": int(all_item_embeddings.shape[1]),
+        "training_loss": training_metrics["loss"],
+        "training_brier": training_metrics["brier"],
+        "model_path": str(all_data_model_path),
+    }
+    all_data_summary_path = all_data_dir / "training_summary.json"
+    with all_data_summary_path.open("w", encoding="utf-8") as file:
+        json.dump(all_data_summary, file, indent=2)
+    print(f"All-data model and statistics saved under {all_data_dir}")
 
 
 if __name__ == "__main__":

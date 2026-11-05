@@ -1,0 +1,11 @@
+{
+  "model_type": "4pl",
+  "epochs": 100,
+  "responses": 1000,
+  "subjects": 46,
+  "items": 927,
+  "embedding_dimension": 384,
+  "training_loss": 0.0021147146299481394,
+  "training_brier": 0.0021147145991614034,
+  "model_path": "results\\all_data\\semantic_irt_model.pt"
+}
