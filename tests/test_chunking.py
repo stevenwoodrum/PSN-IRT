@@ -1,3 +1,4 @@
+import csv
 import json
 import os
 from pathlib import Path
@@ -126,7 +127,7 @@ class ChunkingTests(unittest.TestCase):
         source_root = Path(model.__file__).parent
         vector = chunking.embed_text(self.encoder, ["a small task"])[0].tolist()
         samples = [
-            {"benchmark_id": benchmark, "normalized_name": subject,
+            {"benchmark_id": benchmark, "normalized_name": "unseen_c" if benchmark == "c" and subject == "other" else subject,
              "item_id": f"{benchmark}-{item}", "response": item % 2,
              "content_embedding": vector, "text_encoding": chunking.TEXT_ENCODING}
             for benchmark in ("a", "b", "c") for item in range(6)
@@ -139,6 +140,10 @@ class ChunkingTests(unittest.TestCase):
                 Path("samples_chunked.json").write_text(json.dumps(samples))
                 with patch("sys.argv", ["Semantic_IRT.py", "--epochs", "1"]):
                     train()
+                with Path("results/chunked/leave_one_benchmark_out/summary.csv").open() as file:
+                    folds = list(csv.DictReader(file))
+                self.assertTrue(all(int(row["test_responses"]) == 12 for row in folds))
+                self.assertTrue(all(int(row["excluded_unseen_subject_responses"]) == 0 for row in folds))
                 artifacts = root / "results/chunked/all_data"
                 summary = json.loads((artifacts / "training_summary.json").read_text())
                 self.assertEqual(summary["text_encoding"], chunking.TEXT_ENCODING)

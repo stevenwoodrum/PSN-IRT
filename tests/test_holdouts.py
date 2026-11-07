@@ -9,6 +9,7 @@ import pandas as pd
 import torch
 
 import holdout_training as training
+import full_data_training as full_data
 import model
 
 
@@ -85,6 +86,36 @@ class HoldoutTests(unittest.TestCase):
             self.assertTrue((directory / "best_model.pt").is_file())
             with self.assertRaises(FileExistsError):
                 training.run_fold(split, vectors, directory, settings, "test")
+
+    def test_full_data_reuses_exact_recorded_membership(self):
+        frame = self.frame()
+        membership = frame.rename(columns={"benchmark_id": "dataset"}).drop(columns=["content", "response", "normalized_name"])
+        membership["partition"] = ["train"] * 4 + ["validation"] * 2 + ["test"] * 6
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = root / "splits/benchmark__b"
+            folder.mkdir(parents=True)
+            membership.to_parquet(folder / "membership.parquet", index=False)
+            np.savez(folder / "indices.npz", train=np.arange(4), validation=np.arange(4, 6), test=np.arange(6, 12))
+            (root / "prepared.json").write_text(json.dumps({"splits": {"benchmark__b": {
+                "partition_sha256": full_data.sha(folder / "membership.parquet")}}}))
+            split = full_data.recorded_split(frame, root, "benchmark__b")
+            self.assertEqual(split["train"].row_id.tolist(), [0, 1, 2, 3])
+            self.assertEqual(split["heldout"].row_id.tolist(), list(range(6, 12)))
+            np.savez(folder / "indices.npz", train=np.array([0, 1, 2, 6]), validation=np.arange(4, 6), test=np.arange(6, 12))
+            with self.assertRaises(AssertionError):
+                full_data.recorded_split(frame, root, "benchmark__b")
+
+    def test_inference_crosses_batch_boundary_with_an_unseen_subject(self):
+        network = training.Semantic_IRT(1, item_embed_dim=384).eval()
+        frame = pd.concat([self.frame().iloc[:1]] * 4097, ignore_index=True)
+        frame.loc[4096, "normalized_name"] = "unseen"
+        vector = np.full(384, 1 / np.sqrt(384), dtype=np.float32)
+        data = training.tensors(frame, {"item0": vector}, {"known": 0}, "cpu")
+        actual = training.predict_tensors(network, data)
+        with torch.inference_mode():
+            expected = network(torch.ones(1, 1), torch.from_numpy(vector[None])).item()
+        np.testing.assert_allclose(actual, expected, atol=1e-7)
 
 
 if __name__ == "__main__":

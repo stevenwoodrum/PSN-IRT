@@ -153,16 +153,13 @@ def predict_tensors(model, data):
     model.eval()
     with torch.inference_mode():
         predictions = torch.empty(len(vectors), device=vectors.device)
-        if known.any():
-            predictions[known] = model(subjects[known], vectors[known]).flatten()
-        if (~known).any():
-            theta = model.student_net(torch.eye(subjects.shape[1], device=vectors.device)).mean()
-            params = model.item_param_head(model.item_embed_proj(vectors[~known]))
-            beta = params[:, 0]
-            a = torch.ones_like(beta) if model.model_type == "1pl" else F.softplus(params[:, 1]) + 0.1
-            c = torch.zeros_like(beta) if model.model_type in ("1pl", "2pl") else torch.sigmoid(params[:, 2]) * 0.3
-            d = torch.sigmoid(params[:, 3]) if model.model_type == "4pl" else torch.ones_like(beta)
-            predictions[~known] = c + (d - c) * torch.sigmoid(a * (theta - beta))
+        fallback = model.average_student_ability() if (~known).any() else None
+        # Bound intermediate activations when evaluating the full response population.
+        for start in range(0, len(vectors), 4096):
+            stop = start + 4096
+            predictions[start:stop] = model(
+                subjects[start:stop], vectors[start:stop], fallback_ability=fallback
+            ).flatten()
     return predictions.cpu().numpy()
 
 
@@ -173,6 +170,8 @@ def run_fold(split, item_vectors, directory, settings, name, device="cpu"):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    if torch.device(device).type == "mps":
+        torch.mps.manual_seed(seed)
     train, validation = split["train"], split["validation"]
     students = {name: i for i, name in enumerate(dict.fromkeys(train.normalized_name))}
     model = Semantic_IRT(len(students), item_embed_dim=384, hidden_dim=64, model_type="4pl").to(device)
@@ -217,7 +216,7 @@ def run_fold(split, item_vectors, directory, settings, name, device="cpu"):
     for partition, frame in split.items():
         if frame.empty or partition == "purged":
             continue
-        data = tensors(frame, item_vectors, students, device)
+        data = train_data if partition == "train" else val_data if partition == "validation" else tensors(frame, item_vectors, students, device)
         probabilities = predict_tensors(model, data)
         known = data[3].cpu().numpy()
         prediction = frame.drop(columns=["content"]).copy()
@@ -278,11 +277,12 @@ def comparison_plot(comparison, partition):
     fig, ax = plt.subplots(figsize=(12, 5))
     wide[["constant 0.5", "training global mean", "Semantic IRT"]].plot.bar(ax=ax, rot=0)
     names = {"multi_swebench": "Multi-SWE-bench", "real_webagents": "WebAgents",
-             "researchcodebench": "ResearchCodeBench", "swe_rebench": "SWE-rebench", "item_holdout": "Item holdout"}
+             "researchcodebench": "ResearchCodeBench", "swe_rebench": "SWE-rebench", "matharena": "MathArena", "item_holdout": "Item holdout"}
     ax.set_xticklabels([("Hold out:\n" if name.startswith("benchmark__") else "") +
                         names.get(name.removeprefix("benchmark__"), name) for name in wide.index])
     ax.set(xlabel="", ylabel="Equal-pair Brier (lower is better)",
            title="Internal validation at selected checkpoint" if partition == "validation" else
+           "Held-out items and benchmarks — scored after checkpoint selection" if "item_holdout" in wide.index else
            "Entirely held-out benchmark — scored after checkpoint selection")
     ax.set_ylim(bottom=0)
     ax.margins(y=0.18)
