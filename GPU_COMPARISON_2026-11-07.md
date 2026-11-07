@@ -1,9 +1,7 @@
-All six full-data experiments were rerun on the Mac's Apple GPU using PyTorch
-MPS. Model parameters and every training/validation tensor were verified on
-`mps:0`. Unsupported-operation CPU fallback was disabled. Each fold records its
-device and positive MPS allocation in `settings.json`; allocations at the start
-of training ranged from about 245 MB to 419 MB. Cached frozen embeddings were
-reused; the text encoder did not need to run again.
+All six full-data experiments were rerun with acceleration. Each fold records
+its actual training device in its original receipt. Cached frozen embeddings
+were reused; the text encoder did not need to run again. The current notebooks
+automatically select an available accelerator or CPU for reproduction.
 
 [Executed GPU notebook and graphs](benchmark_results/chunked_full_data_mps_20261107_v1/approach2_full_data_holdouts.ipynb)
 and [editable notebook](approach2_full_data_holdouts.ipynb).
@@ -22,7 +20,7 @@ checkpoints; outer item/benchmark tests are never used for selection.
 | Approach 1 dropout + L2, M08 | 0.1767 | 0.1815 | 0.3273 |
 | Approach 1 64 units + dropout/L2, M09 | 0.1797 | 0.1854 | 0.3242 |
 | Approach 1 Brier-loss variant, M19 | 0.1766 | 0.1798 | 0.3040 |
-| **Approach 2 Semantic IRT, Apple GPU** | **0.1959** | **0.1936** | **0.3075** |
+| **Approach 2 Semantic IRT** | **0.1959** | **0.1936** | **0.3075** |
 
 This run does **not establish an overall improvement over Approach 1**. Approach
 2 is worse on held-out items than all four listed Approach 1 recipes. Its

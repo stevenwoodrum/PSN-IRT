@@ -1,0 +1,6 @@
+benchmark,rows,subjects,names,metadata_tuples,blank_name_rows
+matharena,92861,104,46,53,34947
+multi_swebench,57975,82,20,20,0
+real_webagents,4449,33,33,33,0
+researchcodebench,6784,31,31,31,0
+swe_rebench,67074,1,1,1,0

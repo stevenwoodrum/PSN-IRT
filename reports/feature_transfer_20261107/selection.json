@@ -1,0 +1,58 @@
+{
+  "selected_recipe": "dropout_02",
+  "candidates": [
+    {
+      "recipe": "ordered_name",
+      "equal_pair_Brier": 0.1992614502303164,
+      "checkpoint_sha256": "a1751d2bc5a8ee0ed19a840a757643e080e355c27e947ee835b254c0916a30a4"
+    },
+    {
+      "recipe": "full_metadata",
+      "equal_pair_Brier": 0.1991107218588537,
+      "checkpoint_sha256": "faf9f4ae6d363a0006bbc51049c37340ce126710a6e31314a77d40007aba412b"
+    },
+    {
+      "recipe": "no_name",
+      "equal_pair_Brier": 0.2128289213920605,
+      "checkpoint_sha256": "a4c05ee19ca79ff972ff8bbd995cb343c29ae9011c34557568016c72792f344c"
+    },
+    {
+      "recipe": "no_provider",
+      "equal_pair_Brier": 0.2031903112828653,
+      "checkpoint_sha256": "fdc578e5c843c03ed2b87ff3de64032e854346212e642579ac9497cd326b6d9d"
+    },
+    {
+      "recipe": "no_reasoning",
+      "equal_pair_Brier": 0.2061511838067735,
+      "checkpoint_sha256": "a88aeea29146780a12508eeb69066ac4a5d36bdbbab048ea5ff2e1237e426633"
+    },
+    {
+      "recipe": "no_text",
+      "equal_pair_Brier": 0.2035551059778753,
+      "checkpoint_sha256": "a8212e9596e6a163536205f77068e28d74db7bf8e26b767604f6feb3dba053e6"
+    },
+    {
+      "recipe": "dropout_02",
+      "equal_pair_Brier": 0.194810018570142,
+      "checkpoint_sha256": "8c3c55fa5d418f4f657b9e663f484c6fce9dd377510e0ecbd40cad8a3520598e"
+    },
+    {
+      "recipe": "kernel_l2_0001",
+      "equal_pair_Brier": 0.1962799550768664,
+      "checkpoint_sha256": "509a7fd8564e28f4c9ed153254833ed2042309727c74f8b68bd963a0073a3146"
+    },
+    {
+      "recipe": "hidden_32",
+      "equal_pair_Brier": 0.2034269274469504,
+      "checkpoint_sha256": "9b85277c975b5a9396499971f7dea896d994204b17e27ad6dafbed7863a4f0b1"
+    },
+    {
+      "recipe": "bce",
+      "equal_pair_Brier": 0.2016331257455638,
+      "checkpoint_sha256": "e81605910feda822ed74533bf59e4d4fdec1c90c8e349cccdb9f4932fabc5b49"
+    }
+  ],
+  "locked_utc": "2026-11-07T22:03:26.238902+00:00",
+  "selection_metric": "item internal-validation equal-pair Brier",
+  "outer_test_used": false
+}

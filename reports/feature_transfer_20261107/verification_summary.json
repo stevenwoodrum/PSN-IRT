@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "verified_utc": "2026-11-07T22:07:28.434049+00:00",
+  "source_and_cohort_hashes": true,
+  "exact_recorded_membership": true,
+  "train_only_categories": true,
+  "all_subjects_retained": true,
+  "source_parameters_reconstruct_predictions": true,
+  "max_prediction_error": 2.980194091506405e-08,
+  "max_export_error": 1.970154491770515e-07,
+  "max_metric_error": 6.294252896665853e-09,
+  "limitation": "One seed; repeated outer tests; not independent prospective model selection or hosted performance.",
+  "verified_fits": 25,
+  "regression_tests_at_training_time": 21,
+  "note": "Compact summary of the original audit. Full checkpoints, response CSVs and original receipts are retained locally."
+}

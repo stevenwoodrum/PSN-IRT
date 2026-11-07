@@ -1,0 +1,50 @@
+{
+  "data_audit": {
+    "inventory": [
+      {
+        "benchmark": "matharena",
+        "downloaded_rows": 92944,
+        "eligible_rows": 92861
+      },
+      {
+        "benchmark": "mmdocrag",
+        "downloaded_rows": 342695,
+        "eligible_rows": 0
+      },
+      {
+        "benchmark": "multi_swebench",
+        "downloaded_rows": 57975,
+        "eligible_rows": 57975
+      },
+      {
+        "benchmark": "real_webagents",
+        "downloaded_rows": 4449,
+        "eligible_rows": 4449
+      },
+      {
+        "benchmark": "researchcodebench",
+        "downloaded_rows": 6784,
+        "eligible_rows": 6784
+      },
+      {
+        "benchmark": "swe_rebench",
+        "downloaded_rows": 67074,
+        "eligible_rows": 67074
+      }
+    ],
+    "downloaded_rows": 571921,
+    "eligible_rows": 229143,
+    "distinct_items": 10628,
+    "unique_prompts": 9688,
+    "original_cache_key": "e1aab125409ccb6e64eae7096aab4df64fb73130e4ffa1565a616a2a5a58e090",
+    "added_matharena_cache_key": "4b4b6f2753957e0e7bf72120426cf8b244f38e493f262dcdda808e82ae4c52ea",
+    "cache_reuse": "Exact vectors verified against cache keys recomputed from current encoder files, libraries and matching preprocessing code.",
+    "source_sha256": {
+      "prepared.json": "b933827367e78ce054d63d1e27b7d2c59c2d691ba10595cffeb67598518f99d7",
+      "observations.parquet": "a6afd17336ba99e735090be863f7514483bde7b1e09fe3ac82b7d24c94ca02d8",
+      "prompts.json": "f4db2bc5cbcfda65bfd34959ab19a3435b077a0f93e14128ce30290b6219bd24",
+      "prompt_vectors.npy": "f51cc86fede90ab710a2aae33126f27c582723068f91d17244457cad8aab8d01"
+    },
+    "eligibility": "Same as latest Approach 1: four binary benchmarks plus MathArena exact numeric 0/1 endpoints; no rounding; MMDocRAG and 83 fractional MathArena rows excluded."
+  }
+}

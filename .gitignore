@@ -10,3 +10,6 @@ results/chunked/
 submission_chunked.zip
 benchmark_results/
 .ipynb_checkpoints/
+PSN_IRT_HANDOFF.md
+.venv/
+.local-data/

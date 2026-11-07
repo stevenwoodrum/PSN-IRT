@@ -1,1 +1,12 @@
 sentence-transformers>=3.3,<6
+torch
+numpy
+pandas
+pyarrow
+scikit-learn
+matplotlib
+tqdm
+nbformat
+nbclient
+ipykernel
+jupyterlab

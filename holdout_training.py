@@ -14,6 +14,7 @@ from sklearn.model_selection import train_test_split
 
 from models.Semantic_IRT import Semantic_IRT
 from models.text_chunking import TEXT_ENCODING, embed_text, make_text_encoder
+from runtime import allocated_bytes, seed_device
 
 
 def load_samples(source, chunked_path, encoder_source, device="cpu"):
@@ -170,8 +171,7 @@ def run_fold(split, item_vectors, directory, settings, name, device="cpu"):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if torch.device(device).type == "mps":
-        torch.mps.manual_seed(seed)
+    seed_device(seed, device)
     train, validation = split["train"], split["validation"]
     students = {name: i for i, name in enumerate(dict.fromkeys(train.normalized_name))}
     model = Semantic_IRT(len(students), item_embed_dim=384, hidden_dim=64, model_type="4pl").to(device)
@@ -181,11 +181,8 @@ def run_fold(split, item_vectors, directory, settings, name, device="cpu"):
     actual_device = str(next(model.parameters()).device)
     tensor_devices = sorted({str(value.device) for value in (*train_data, *val_data)})
     assert all(value.device.type == torch.device(device).type for value in (*train_data, *val_data))
-    gpu_bytes = None
-    if torch.device(device).type == "mps":
-        torch.mps.synchronize()
-        gpu_bytes = torch.mps.current_allocated_memory()
-    print(f"{name}: model {actual_device}; training/validation tensors {tensor_devices}; MPS allocation {gpu_bytes}", flush=True)
+    gpu_bytes = allocated_bytes(device)
+    print(f"{name}: model {actual_device}; training/validation tensors {tensor_devices}; allocated bytes {gpu_bytes}", flush=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=settings["learning_rate"], weight_decay=settings["weight_decay"])
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=3, factor=0.5)
     best, stale, best_epoch, history, best_state = float("inf"), 0, 0, [], None
@@ -248,7 +245,7 @@ def run_fold(split, item_vectors, directory, settings, name, device="cpu"):
     ledger.to_csv(directory / "split.csv", index=False)
     (directory / "settings.json").write_text(json.dumps({**settings, "text_encoding": TEXT_ENCODING,
         "training_device": actual_device, "training_tensor_devices": tensor_devices,
-        "mps_allocated_bytes_before_training": gpu_bytes,
+        "accelerator_allocated_bytes_before_training": gpu_bytes,
         "checkpoint_selection": "internal validation equal subject-benchmark-pair Brier",
         "objective": "response-row MSE/Brier", "subject_fallback": "mean training-subject ability",
         "purged_rows": len(split["purged"]), "epochs_run": len(history)}, indent=2))
