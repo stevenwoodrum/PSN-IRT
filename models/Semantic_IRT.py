@@ -7,7 +7,6 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
 from sklearn.metrics import brier_score_loss
 import numpy as np
-from tqdm import tqdm
 import argparse
 import json
 import matplotlib.pyplot as plt
@@ -59,8 +58,11 @@ class Semantic_IRT(nn.Module):
             nn.Linear(hidden_dim, param_dims[self.model_type])
         )
 
-    def forward(self, student_id, item_embed):
+    def forward(self, student_id, item_embed, fallback_ability=None):
         theta = self.student_net(student_id)
+        if fallback_ability is not None:
+            unknown_students = student_id.sum(dim=1, keepdim=True) == 0
+            theta = torch.where(unknown_students, fallback_ability, theta)
         iem_feat = self.item_embed_proj(item_embed)
         params = self.item_param_head(iem_feat)
 
@@ -75,6 +77,16 @@ class Semantic_IRT(nn.Module):
         prob = c + (d - c) * torch.sigmoid(a * (theta - beta))
         return prob.clamp(1e-6, 1-1e-6)
 
+    def average_student_ability(self):
+        num_students = self.student_net[0].in_features
+        parameter = next(self.student_net.parameters())
+        student_ids = torch.eye(
+            num_students,
+            dtype=parameter.dtype,
+            device=parameter.device,
+        )
+        return self.student_net(student_ids).mean(dim=0, keepdim=True)
+
 # -------------------- Dataset Class --------------------
 
 
@@ -84,7 +96,7 @@ class ResponseSamplesDataset(Dataset):
         self.item_embeddings = torch.tensor(item_embeddings, dtype=torch.float32)
         self.data = [
             (
-                student_indices[sample["normalized_name"]],
+                student_indices.get(sample["normalized_name"]),
                 item_indices[sample["item_id"]],
                 int(sample["response"]),
             )
@@ -97,7 +109,10 @@ class ResponseSamplesDataset(Dataset):
     def __getitem__(self, idx):
         sid, qid, label = self.data[idx]
         return {
-            "student_id": F.one_hot(torch.tensor(sid), self.num_students).float(),
+            "student_id": (
+                F.one_hot(torch.tensor(sid), self.num_students).float()
+                if sid is not None else torch.zeros(self.num_students)
+            ),
             "item_embed": self.item_embeddings[qid],
             "label": torch.tensor(label, dtype=torch.float32)
         }
@@ -105,7 +120,7 @@ class ResponseSamplesDataset(Dataset):
 # -------------------- Training Tools --------------------
 
 
-def evaluate(model, dataloader, device, criterion=None):
+def evaluate(model, dataloader, device, criterion=None, fallback_ability=None):
     model.eval()
     probs, labels = [], []
     total_loss = 0.0
@@ -118,10 +133,17 @@ def evaluate(model, dataloader, device, criterion=None):
             student_ids = batch["student_id"].to(device)
             item_embeddings = batch["item_embed"].to(device)
             batch_labels = batch["label"].to(device)
-            outputs = model(
-                student_ids,
-                item_embeddings,
-            )
+            if fallback_ability is not None:
+                outputs = model(
+                    student_ids, item_embeddings,
+                    fallback_ability=torch.tensor(
+                        [[fallback_ability]],
+                        dtype=student_ids.dtype,
+                        device=device,
+                    ),
+                )
+            else:
+                outputs = model(student_ids, item_embeddings)
             total_loss += criterion(
                 outputs.squeeze(-1), batch_labels
             ).item() * batch_labels.numel()
@@ -314,27 +336,15 @@ def main():
             sample["normalized_name"] for sample in trainval_samples
         ))
         known_students = set(student_names)
-        test_samples = [
-            sample for sample in all_test_samples
-            if sample["normalized_name"] in known_students
-        ]
-        excluded_test_count = len(all_test_samples) - len(test_samples)
+        test_samples = all_test_samples
+        unseen_test_count = sum(
+            sample["normalized_name"] not in known_students
+            for sample in test_samples
+        )
         if not trainval_samples:
             raise ValueError(
                 f"No training responses available for {heldout_benchmark}"
             )
-        if not test_samples:
-            print(
-                f"Skipping {heldout_benchmark}: no held-out responses have "
-                "subjects present in the training benchmarks."
-            )
-            fold_results.append({
-                "benchmark_id": heldout_benchmark,
-                "test_responses": 0,
-                "excluded_unseen_subject_responses": excluded_test_count,
-                "test_brier": np.nan,
-            })
-            continue
 
         fold_samples = trainval_samples + test_samples
         item_ids = list(dict.fromkeys(
@@ -405,23 +415,21 @@ def main():
         )
         criterion = nn.MSELoss()
         best_brier = float("inf")
+        best_epoch = 0
         history = []
 
         print(
             f"\nHoldout: {heldout_benchmark} | "
             f"train/validation responses: {trainval_size} | "
             f"test responses: {len(test_samples)} | "
-            f"excluded unseen-subject responses: {excluded_test_count}"
+            f"unseen-subject responses: {unseen_test_count}"
         )
         for epoch in range(args.epochs):
             model.train()
             train_loss_total = 0.0
             train_examples = 0
 
-            for batch in tqdm(
-                train_loader,
-                desc=f"{heldout_benchmark} epoch {epoch + 1}",
-            ):
+            for batch in train_loader:
                 optimizer.zero_grad()
                 outputs = model(
                     batch["student_id"].to(device),
@@ -445,14 +453,9 @@ def main():
                 "validation_brier": val_metrics["brier"],
             })
             scheduler.step(val_metrics["brier"])
-            print(
-                f"Train Loss: {training_loss:.4f} | "
-                f"Val Loss: {val_metrics['loss']:.4f} | "
-                f"Val Brier: {val_metrics['brier']:.4f}"
-            )
-
             if val_metrics["brier"] < best_brier:
                 best_brier = val_metrics["brier"]
+                best_epoch = epoch + 1
                 torch.save(model.state_dict(), fold_dir / "best_model.pt")
 
         model.load_state_dict(torch.load(
@@ -460,13 +463,22 @@ def main():
             map_location=device,
             weights_only=True,
         ))
-        test_metrics = evaluate(model, test_loader, device)
+        average_ability = model.average_student_ability().item()
+        average_ability_path = fold_dir / "average_ability.json"
+        with average_ability_path.open("w", encoding="utf-8") as file:
+            json.dump({"average_ability": average_ability}, file, indent=2)
+        with average_ability_path.open(encoding="utf-8") as file:
+            average_ability = json.load(file)["average_ability"]
+        test_metrics = evaluate(
+            model, test_loader, device, fallback_ability=average_ability
+        )
         plot_training_history(
             history, fold_dir, test_brier=test_metrics["brier"]
         )
         print(
-            f"{heldout_benchmark} test Brier: "
-            f"{test_metrics['brier']:.4f}"
+            f"{heldout_benchmark} best checkpoint (epoch {best_epoch}) | "
+            f"validation Brier: {best_brier:.4f} | "
+            f"test Brier: {test_metrics['brier']:.4f}"
         )
         save_params(
             model, student_names, item_ids, item_embeddings,
@@ -475,7 +487,7 @@ def main():
         fold_results.append({
             "benchmark_id": heldout_benchmark,
             "test_responses": len(test_samples),
-            "excluded_unseen_subject_responses": excluded_test_count,
+            "excluded_unseen_subject_responses": 0,
             "test_brier": test_metrics["brier"],
         })
 
@@ -537,10 +549,7 @@ def main():
         train_loss_total = 0.0
         train_examples = 0
 
-        for batch in tqdm(
-            all_data_loader,
-            desc=f"All-data epoch {epoch + 1}",
-        ):
+        for batch in all_data_loader:
             all_data_optimizer.zero_grad()
             outputs = all_data_model(
                 batch["student_id"].to(device),
@@ -565,11 +574,6 @@ def main():
             "training_brier": training_metrics["brier"],
         })
         all_data_scheduler.step(training_metrics["brier"])
-        print(
-            f"All-data train loss: {training_loss:.4f} | "
-            f"All-data Brier: {training_metrics['brier']:.4f}"
-        )
-
     all_data_model_path = all_data_dir / "semantic_irt_model.pt"
     torch.save(all_data_model.state_dict(), all_data_model_path)
     plot_training_history(all_data_history, all_data_dir)
