@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, Subset, random_split
 from sklearn.metrics import brier_score_loss
 import numpy as np
 from tqdm import tqdm
@@ -367,14 +367,9 @@ def main():
                 f"for {heldout_benchmark} ({trainval_size} responses)"
             )
 
-        generator = torch.Generator().manual_seed(
-            RANDOM_SEED + fold_number
-        )
-        trainval_set, test_set = random_split(
-            dataset,
-            [trainval_size, len(test_samples)],
-            generator=generator,
-        )
+        # The concatenation boundary defines benchmark membership; do not shuffle it.
+        trainval_set = Subset(dataset, range(trainval_size))
+        test_set = Subset(dataset, range(trainval_size, len(dataset)))
         train_set, val_set = random_split(
             trainval_set,
             [train_size, val_size],

@@ -8,3 +8,5 @@ __pycache__/
 samples_chunked.json
 results/chunked/
 submission_chunked.zip
+benchmark_results/
+.ipynb_checkpoints/
