@@ -84,6 +84,9 @@ class HoldoutTests(unittest.TestCase):
             self.assertEqual(set(saved[saved.partition == "heldout"].benchmark_id), {"b"})
             self.assertEqual(set(saved[saved.partition == "train"].benchmark_id), {"a"})
             self.assertTrue((directory / "best_model.pt").is_file())
+            saved_settings = json.loads((directory / "settings.json").read_text())
+            self.assertEqual(saved_settings["training_device"], "cpu")
+            self.assertEqual(saved_settings["training_tensor_devices"], ["cpu"])
             with self.assertRaises(FileExistsError):
                 training.run_fold(split, vectors, directory, settings, "test")
 

@@ -2,10 +2,14 @@ This branch starts at Steven's `steven/approach-2` commit
 `5823c1ffad7c1ce5912fb648f46924b832561926` and adds Approach 1's text chunking.
 Steven's November 7 unseen-subject evaluation fix (`435ab92`) is also merged.
 
-[Full-data results and graphs](FULL_DATA_RESULTS_2026-11-07.md) are the current
-evaluation: item validation Brier 0.1920, independent item-test Brier 0.1977 and
-macro benchmark-test Brier 0.3053 (equal-pair weighting; lower is better).
-All 15 regression checks and the full saved-prediction audit passed.
+[Apple-GPU results and matched Approach 1 comparison](GPU_COMPARISON_2026-11-07.md)
+are the current evaluation: item validation Brier 0.1959, independent item-test
+Brier 0.1936 and benchmark-test average 0.3075 (equal-pair weighting; lower is
+better). All six folds trained on `mps:0`, with device checks and CPU operator
+fallback disabled. The full-data notebook now requires Apple MPS and records
+actual model/tensor devices. All 15 regression checks and the GPU checkpoint
+audit passed. The [earlier CPU full-data results](FULL_DATA_RESULTS_2026-11-07.md)
+remain historical.
 
 Use `approach2_full_data_holdouts.ipynb` for the full-data experiment: **229,143
 eligible responses**, 10,628 item IDs and 9,688 unique prompt vectors. This uses

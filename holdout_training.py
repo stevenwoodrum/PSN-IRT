@@ -178,6 +178,14 @@ def run_fold(split, item_vectors, directory, settings, name, device="cpu"):
     train_data = tensors(train, item_vectors, students, device)
     val_data = tensors(validation, item_vectors, students, device)
     assert train_data[3].all()
+    actual_device = str(next(model.parameters()).device)
+    tensor_devices = sorted({str(value.device) for value in (*train_data, *val_data)})
+    assert all(value.device.type == torch.device(device).type for value in (*train_data, *val_data))
+    gpu_bytes = None
+    if torch.device(device).type == "mps":
+        torch.mps.synchronize()
+        gpu_bytes = torch.mps.current_allocated_memory()
+    print(f"{name}: model {actual_device}; training/validation tensors {tensor_devices}; MPS allocation {gpu_bytes}", flush=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=settings["learning_rate"], weight_decay=settings["weight_decay"])
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=3, factor=0.5)
     best, stale, best_epoch, history, best_state = float("inf"), 0, 0, [], None
@@ -239,6 +247,8 @@ def run_fold(split, item_vectors, directory, settings, name, device="cpu"):
     ledger = pd.concat([part.drop(columns="content").assign(partition=label) for label, part in split.items()])
     ledger.to_csv(directory / "split.csv", index=False)
     (directory / "settings.json").write_text(json.dumps({**settings, "text_encoding": TEXT_ENCODING,
+        "training_device": actual_device, "training_tensor_devices": tensor_devices,
+        "mps_allocated_bytes_before_training": gpu_bytes,
         "checkpoint_selection": "internal validation equal subject-benchmark-pair Brier",
         "objective": "response-row MSE/Brier", "subject_fallback": "mean training-subject ability",
         "purged_rows": len(split["purged"]), "epochs_run": len(history)}, indent=2))
