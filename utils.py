@@ -1,11 +1,16 @@
+from models.text_chunking import TEXT_ENCODING, embed_text, make_text_encoder
+
 sbert = None
 
 def get_sbert():
     """Return a singleton instance of an SBERT model"""
     global sbert
     if sbert is None:
-        from sentence_transformers import SentenceTransformer
-        sbert = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        sbert = make_text_encoder(
+            TEXT_ENCODING["model"],
+            max_length=TEXT_ENCODING["text_max_length"],
+            chunk_size=TEXT_ENCODING["text_chunk_size"],
+        )
     return sbert
 
 
@@ -39,7 +44,8 @@ def create_submission_zip(zip_name: str="submission", files: list=None):
             "models.txt",
             "requirements.txt",
             "models/Semantic_IRT.py",
-            "results/all_data",
+            "models/text_chunking.py",
+            "results/chunked/all_data",
         ]
 
     root = Path.cwd().resolve()

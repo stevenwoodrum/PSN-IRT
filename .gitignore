@@ -4,3 +4,7 @@ combine_ques.csv
 analysis/
 images/
 opencompass/
+__pycache__/
+samples_chunked.json
+results/chunked/
+submission_chunked.zip

@@ -15,7 +15,7 @@ import utils
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
-_ALL_DATA_DIR = _PROJECT_ROOT / "results" / "all_data"
+_ALL_DATA_DIR = _PROJECT_ROOT / "results" / "chunked" / "all_data"
 
 
 @dataclass
@@ -33,6 +33,9 @@ def _get_predictor() -> _Predictor:
     summary_path = _ALL_DATA_DIR / "training_summary.json"
     with summary_path.open(encoding="utf-8") as file:
         summary = json.load(file)
+
+    if summary.get("text_encoding") != utils.TEXT_ENCODING:
+        raise ValueError("Retrain with the current chunked embeddings before prediction.")
 
     model_type = summary["model_type"]
     num_students = int(summary["subjects"])
@@ -90,9 +93,7 @@ def predict(input: list[dict], labeled: list) -> float:
     try:
         normalized_name = subject["normalized_name"]
         embedding = torch.as_tensor(
-            utils.get_sbert().encode(
-                item["item_content"], convert_to_numpy=True
-            ),
+            utils.embed_text(utils.get_sbert(), [item["item_content"]])[0],
             dtype=torch.float32,
         )
     except KeyError as error:

@@ -13,6 +13,11 @@ import json
 import matplotlib.pyplot as plt
 from pathlib import Path
 
+if __package__:
+    from .text_chunking import TEXT_ENCODING
+else:
+    from text_chunking import TEXT_ENCODING
+
 RANDOM_SEED = 5814
 
 # -------------------- Model Definition --------------------
@@ -236,7 +241,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_type", type=str, default='4pl',
                         choices=['1pl', '2pl', '3pl', '4pl'])
-    parser.add_argument("--samples_json", type=str, default="samples.json")
+    parser.add_argument("--samples_json", type=str, default="samples_chunked.json")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=512)
     args = parser.parse_args()
@@ -251,6 +256,8 @@ def main():
             raise ValueError(f"No response samples found in {args.samples_json}")
         item_embeddings_by_id = {}
         for sample in samples:
+            if sample.get("text_encoding") != TEXT_ENCODING:
+                raise ValueError("Regenerate samples with the current chunked encoder before training.")
             required_fields = (
                 "benchmark_id", "normalized_name", "item_id",
                 "content_embedding", "response",
@@ -298,7 +305,7 @@ def main():
         raise ValueError("All content_embedding vectors must have equal length")
 
     benchmark_ids = sorted({sample["benchmark_id"] for sample in samples})
-    results_dir = Path("results") / "leave_one_benchmark_out"
+    results_dir = Path("results") / "chunked" / "leave_one_benchmark_out"
     fold_results = []
 
     for fold_number, heldout_benchmark in enumerate(benchmark_ids):
@@ -484,7 +491,7 @@ def main():
     pd.DataFrame(fold_results).to_csv(summary_path, index=False)
     print(f"\nLeave-one-benchmark-out results saved to {summary_path}")
 
-    all_data_dir = Path("results") / "all_data"
+    all_data_dir = Path("results") / "chunked" / "all_data"
     all_data_dir.mkdir(parents=True, exist_ok=True)
     all_student_names = list(dict.fromkeys(
         sample["normalized_name"] for sample in samples
@@ -582,6 +589,7 @@ def main():
         all_data_dir,
     )
     all_data_summary = {
+        "text_encoding": TEXT_ENCODING,
         "model_type": args.model_type,
         "epochs": args.epochs,
         "responses": len(samples),
