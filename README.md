@@ -79,9 +79,8 @@ The feature-transfer variants in the table **have not beaten the original model*
 All benchmark averages above lose to constant probability 0.5 (Brier 0.25).
 These are single-seed, reused test sets, not hosted competition results.
 
-[Experiment details](FEATURE_TRANSFER_RESULTS_2026-11-07.md) ·
-[Tables, graphs and verification summary](reports/feature_transfer_20261107/) ·
-[Embedding/long-document assessment](EMBEDDING_ASSESSMENT_2026-11-07.md).
+Tables, graphs and the verification summary for these runs are in
+[reports/feature_transfer_20261107/](reports/feature_transfer_20261107/).
 
 ## Proposed 2PL model (scalar ability)
 
